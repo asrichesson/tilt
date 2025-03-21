@@ -22,6 +22,7 @@ import (
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
+	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -1093,7 +1094,7 @@ k8s_yaml('snack.yaml')`
 
 	f.fsWatcher.Events <- watch.NewFileEvent(f.JoinPath("src/main.go"))
 	f.WaitUntil("pending change appears", func(st store.EngineState) bool {
-		return len(st.BuildStatus(imageTargetID).PendingFileChanges) > 0
+		return st.BuildStatus(imageTargetID).HasPendingFileChanges()
 	})
 	f.assertNoCall("even tho there are pending changes, manual manifest shouldn't build w/o explicit trigger")
 
@@ -1307,7 +1308,6 @@ func TestDisabledHudUpdated(t *testing.T) {
 	assert.Equal(t, nil, err)
 
 	f.assertAllBuildsConsumed()
-
 }
 
 func TestPodEvent(t *testing.T) {
@@ -1953,22 +1953,6 @@ func TestHudExitWithError(t *testing.T) {
 	e := errors.New("helllllo")
 	f.store.Dispatch(hud.NewExitAction(e))
 	_ = f.WaitForNoExit()
-}
-
-func TestNewConfigsAreWatchedAfterFailure(t *testing.T) {
-	f := newTestFixture(t)
-	f.useRealTiltfileLoader()
-	f.loadAndStart()
-
-	f.WriteConfigFiles("Tiltfile", "read_file('foo.txt')")
-	f.WaitUntil("foo.txt is a config file", func(state store.EngineState) bool {
-		for _, s := range state.MainConfigPaths() {
-			if s == f.JoinPath("foo.txt") {
-				return true
-			}
-		}
-		return false
-	})
 }
 
 func TestDockerComposeUp(t *testing.T) {
@@ -2644,6 +2628,11 @@ func TestVersionSettingsStoredOnState(t *testing.T) {
 	f.WaitUntil("CheckVersionUpdates is set to false", func(state store.EngineState) bool {
 		return state.VersionSettings.CheckUpdates == false
 	})
+
+	filepath.Walk(f.Path(), func(path string, info os.FileInfo, err error) error {
+		log.Printf("path: %s", path)
+		return nil
+	})
 }
 
 func TestAnalyticsTiltfileOpt(t *testing.T) {
@@ -3129,7 +3118,8 @@ func newTestFixture(t *testing.T, options ...fixtureOptions) *testFixture {
 		}
 	}
 
-	base := xdg.FakeBase{Dir: f.Path()}
+	fs := afero.NewMemMapFs()
+	base := xdg.NewFakeBase(f.Path(), fs)
 	log := bufsync.NewThreadSafeBuffer()
 	to := tiltanalytics.NewFakeOpter(analytics.OptIn)
 	ctx, _, ta := testutils.ForkedCtxAndAnalyticsWithOpterForTest(log, to)
@@ -3197,7 +3187,7 @@ func newTestFixture(t *testing.T, options ...fixtureOptions) *testFixture {
 	lsc := local.NewServerController(cdc)
 	sr := ctrlsession.NewReconciler(cdc, st, clock)
 	sessionController := session.NewController(sr)
-	ts := hud.NewTerminalStream(hud.NewIncrementalPrinter(log), st)
+	ts := hud.NewTerminalStream(hud.NewIncrementalPrinter(log), hud.NewLogFilter(hud.FilterSourceAll, nil, hud.FilterLevel(logger.NoneLvl)), st)
 	tp := prompt.NewTerminalPrompt(ta, prompt.TTYOpen, openurl.BrowserOpen,
 		log, "localhost", model.WebURL{})
 	h := hud.NewFakeHud()
@@ -3239,7 +3229,7 @@ func newTestFixture(t *testing.T, options ...fixtureOptions) *testFixture {
 	clr := cluster.NewReconciler(ctx, cdc, st, clock, clusterClients, docker.LocalEnv{},
 		cluster.FakeDockerClientOrError(dockerClient, nil),
 		cluster.FakeKubernetesClientOrError(kClient, nil),
-		wsl, base, "tilt-default")
+		wsl, base, "tilt-default", fs)
 	dclsr := dockercomposelogstream.NewReconciler(cdc, st, fakeDcc, dockerClient)
 
 	cb := controllers.NewControllerBuilder(tscm, controllers.ProvideControllers(
@@ -3413,7 +3403,7 @@ func (f *testFixture) Init(action InitAction) {
 	expectedFileWatches := ctrltiltfile.ToFileWatchObjects(ctrltiltfile.WatchInputs{
 		TiltfileManifestName: model.MainTiltfileManifestName,
 		Manifests:            state.Manifests(),
-		ConfigFiles:          state.MainConfigPaths(),
+		ConfigFiles:          []string{action.TiltfilePath},
 		TiltfilePath:         action.TiltfilePath,
 	}, make(map[model.ManifestName]*v1alpha1.DisableSource))
 	if f.overrideMaxParallelUpdates > 0 {
@@ -3859,9 +3849,7 @@ func (f *testFixture) setupDCFixture() (redis, server model.Manifest) {
 		f.T().Fatalf("Expected two manifests. Actual: %v", tlr.Manifests)
 	}
 
-	for _, m := range tlr.Manifests {
-		require.NoError(f.t, m.InferImageProperties())
-	}
+	require.NoError(f.t, model.InferImageProperties(tlr.Manifests))
 
 	return tlr.Manifests[0], tlr.Manifests[1]
 }

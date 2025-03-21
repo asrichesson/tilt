@@ -3,22 +3,28 @@ package cli
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
+	"github.com/tilt-dev/tilt/internal/hud"
 	"github.com/tilt-dev/tilt/internal/k8s"
 	"github.com/tilt-dev/tilt/internal/tiltfile"
 	"github.com/tilt-dev/tilt/pkg/model"
 )
 
-var defaultWebHost = "localhost"
-var defaultWebPort = model.DefaultWebPort
-var defaultNamespace = ""
-var webHostFlag = ""
-var webPortFlag = 0
-var snapshotViewPortFlag = 0
-var namespaceOverride = ""
+var (
+	defaultWebHost       = "localhost"
+	defaultWebPort       = model.DefaultWebPort
+	defaultNamespace     = ""
+	defaultLogLevel      = ""
+	defaultLogSource     = "all"
+	webHostFlag          = ""
+	webPortFlag          = 0
+	snapshotViewPortFlag = 0
+	namespaceOverride    = ""
+)
 
 func readEnvDefaults() error {
 	envPort := os.Getenv("TILT_PORT")
@@ -73,6 +79,47 @@ func addDevServerFlags(cmd *cobra.Command) {
 
 func addNamespaceFlag(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&namespaceOverride, "namespace", defaultNamespace, "Default namespace for Kubernetes resources (overrides default namespace from active context in kubeconfig)")
+}
+
+func addLogFilterResourcesFlag(cmd *cobra.Command) {
+	cmd.Flags().StringSliceVar(&logResourcesFlag, "log-resource", nil, `Specify one or more resources to print logs for, e.g. "(Tiltfile)", "nginx", etc. If not specified, prints all resources.`)
+}
+
+func addLogFilterFlags(cmd *cobra.Command, prefix string) {
+	cmd.Flags().StringVar(&logLevelFlag, prefix+"level", defaultLogLevel, `Specify a log level. One of "warn", "error"`)
+	_ = cmd.RegisterFlagCompletionFunc(
+		prefix+"level",
+		func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			var completions []string
+			options := []string{"warn", "error"}
+			for _, option := range options {
+				if strings.Contains(option, strings.ToLower(toComplete)) {
+					completions = append(completions, option)
+				}
+			}
+
+			return completions, cobra.ShellCompDirectiveNoFileComp
+		},
+	)
+	cmd.Flags().StringVar(&logSourceFlag, prefix+"source", defaultLogSource, `Specify a log source. One of "all", "build", "runtime"`)
+	_ = cmd.RegisterFlagCompletionFunc(
+		prefix+"source",
+		func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			var completions []string
+			options := []string{
+				hud.FilterSourceAll.String(),
+				hud.FilterSourceBuild.String(),
+				hud.FilterSourceRuntime.String(),
+			}
+			for _, option := range options {
+				if strings.Contains(option, strings.ToLower(toComplete)) {
+					completions = append(completions, option)
+				}
+			}
+
+			return completions, cobra.ShellCompDirectiveNoFileComp
+		},
+	)
 }
 
 var kubeContextOverride string

@@ -106,6 +106,9 @@ var BaseWireSet = wire.NewSet(
 
 	build.ProvideClock,
 	provideClock,
+	provideLogSource,
+	provideLogResources,
+	provideLogLevel,
 	hud.WireSet,
 	prompt.WireSet,
 	wire.Value(openurl.OpenURL(openurl.BrowserOpen)),
@@ -209,7 +212,8 @@ func wireCmdUpdog(ctx context.Context,
 	analytics *analytics.TiltAnalytics,
 	cmdTags engineanalytics.CmdTags,
 	subcommand model.TiltSubcommand,
-	objects []ctrlclient.Object) (CmdUpdogDeps, error) {
+	objects []ctrlclient.Object,
+) (CmdUpdogDeps, error) {
 	wire.Build(BaseWireSet,
 		provideUpdogSubscriber,
 		provideUpdogCmdSubscribers,
@@ -290,7 +294,8 @@ func ProvideDownDeps(
 	tfl tiltfile.TiltfileLoader,
 	dcClient dockercompose.DockerComposeClient,
 	kClient k8s.Client,
-	execer localexec.Execer) DownDeps {
+	execer localexec.Execer,
+) DownDeps {
 	return DownDeps{
 		tfl:      tfl,
 		dcClient: dcClient,
@@ -300,20 +305,15 @@ func ProvideDownDeps(
 }
 
 func wireLogsDeps(ctx context.Context, tiltAnalytics *analytics.TiltAnalytics, subcommand model.TiltSubcommand) (LogsDeps, error) {
-	wire.Build(UpWireSet, ProvideLogsDeps)
+	wire.Build(UpWireSet,
+		wire.Struct(new(LogsDeps), "*"))
 	return LogsDeps{}, nil
 }
 
 type LogsDeps struct {
 	url     model.WebURL
 	printer *hud.IncrementalPrinter
-}
-
-func ProvideLogsDeps(u model.WebURL, p *hud.IncrementalPrinter) LogsDeps {
-	return LogsDeps{
-		url:     u,
-		printer: p,
-	}
+	filter  hud.LogFilter
 }
 
 func provideClock() func() time.Time {
@@ -349,4 +349,27 @@ func wireLsp(ctx context.Context, l logger.Logger, subcommand model.TiltSubcomma
 
 func provideCITimeoutFlag() model.CITimeoutFlag {
 	return model.CITimeoutFlag(ciTimeout)
+}
+
+func provideLogSource() hud.FilterSource {
+	return hud.FilterSource(logSourceFlag)
+}
+
+func provideLogResources() hud.FilterResources {
+	result := []model.ManifestName{}
+	for _, r := range logResourcesFlag {
+		result = append(result, model.ManifestName(r))
+	}
+	return hud.FilterResources(result)
+}
+
+func provideLogLevel() hud.FilterLevel {
+	switch logLevelFlag {
+	case "warn", "WARN", "warning", "WARNING":
+		return hud.FilterLevel(logger.WarnLvl)
+	case "error", "ERROR":
+		return hud.FilterLevel(logger.ErrorLvl)
+	default:
+		return hud.FilterLevel(logger.NoneLvl)
+	}
 }
